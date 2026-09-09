@@ -9,18 +9,23 @@ import streamlit as st
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="학교 급식 달력", page_icon="🍱", layout="wide")
 
-# 카드 테두리, 배지 및 영양정보 스타일 정의 (CSS)
+# CSS 스타일 정의
 st.markdown(
     """
     <style>
     .meal-card {
         border: 1px solid #e0e0e0;
-        border-radius: 8px;
-        padding: 12px;
+        border-radius: 12px;
+        padding: 14px;
         margin-bottom: 12px;
         background-color: #ffffff;
         min-height: 180px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .meal-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 8px 15px rgba(0,0,0,0.1);
     }
     .today-card {
         border: 2px solid #3182ce !important;
@@ -92,6 +97,25 @@ st.markdown(
         font-weight: bold;
         outline: none;
     }
+
+    /* 알레르기 경고 하이라이트 스타일 */
+    .allergy-alert {
+        background-color: #fff5f5;
+        border-left: 3px solid #e53e3e;
+        padding: 2px 6px;
+        margin-top: 2px;
+        margin-bottom: 2px;
+        border-radius: 2px;
+    }
+    .allergy-badge {
+        background-color: #e53e3e;
+        color: white;
+        font-size: 0.7em;
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-weight: bold;
+        margin-left: 4px;
+    }
     </style>
 """,
     unsafe_allow_html=True,
@@ -108,7 +132,40 @@ ALLERGY_MAP = {
 }
 
 # -----------------------------------------------------------------------------
-# 3. 사이드바 구성
+# 3. 학교 검색 함수 (NEIS schoolInfo API)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=3600)
+def search_school(key, school_name):
+    url = "https://open.neis.go.kr/hub/schoolInfo"
+    params = {
+        "KEY": key,
+        "Type": "json",
+        "pIndex": 1,
+        "pSize": 20,
+        "SCHUL_NM": school_name
+    }
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        if "schoolInfo" in data:
+            rows = data["schoolInfo"][1]["row"]
+            results = []
+            for r in rows:
+                results.append({
+                    "name": r["SCHUL_NM"],
+                    "atpt": r["ATPT_OFCDC_SC_CODE"],
+                    "sd": r["SD_SCHUL_CODE"],
+                    "location": r.get("LCTN_SC_NM", "")
+                })
+            return results, None
+        else:
+            return [], "검색 결과가 없습니다."
+    except Exception as e:
+        return [], f"검색 중 통신 오류 발생: {e}"
+
+# -----------------------------------------------------------------------------
+# 4. 사이드바 구성 (학교 검색 + 알레르기 강황 설정)
 # -----------------------------------------------------------------------------
 st.sidebar.title("⚙️ 설정")
 
@@ -119,47 +176,94 @@ if "NEIS_KEY" not in st.secrets:
 
 neis_key = st.secrets["NEIS_KEY"]
 
-atpt_code = st.sidebar.text_input("시도교육청코드", value="B10", help="예: 서울(B10), 경기(J10) 등")
-sd_code = st.sidebar.text_input("표준학교코드", value="7010057", help="학교의 7자리 표준학교코드")
+# 🏫 1) 학교 검색
+st.sidebar.subheader("🏫 학교 검색")
+search_keyword = st.sidebar.text_input("학교 이름을 입력하세요", value="서울고등학교")
+
+if "selected_atpt" not in st.session_state:
+    st.session_state.selected_atpt = "B10"
+if "selected_sd" not in st.session_state:
+    st.session_state.selected_sd = "7010057"
+if "school_display_name" not in st.session_state:
+    st.session_state.school_display_name = "서울고등학교"
+
+if search_keyword:
+    schools, search_err = search_school(neis_key, search_keyword)
+    if schools:
+        school_options = [f"{s['name']} ({s['location']})" for s in schools]
+        selected_index = st.sidebar.selectbox("목록에서 학교 선택", range(len(school_options)), format_func=lambda x: school_options[x])
+        
+        chosen = schools[selected_index]
+        st.session_state.selected_atpt = chosen["atpt"]
+        st.session_state.selected_sd = chosen["sd"]
+        st.session_state.school_display_name = chosen["name"]
+    elif search_err:
+        st.sidebar.caption(f"⚠️ {search_err}")
+
+atpt_code = st.session_state.selected_atpt
+sd_code = st.session_state.selected_sd
 
 st.sidebar.markdown("---")
-convert_allergy = st.sidebar.toggle("알레르기 식품명으로 변환", value=False)
 
-with st.sidebar.expander("ℹ️ 알레르기 번호 표 보기"):
+# ⚠️ 2) 나의 알레르기 선택
+st.sidebar.subheader("⚠️ 나의 알레르기 설정")
+user_allergies = st.sidebar.multiselect(
+    "보유 알레르기를 선택하세요",
+    options=list(ALLERGY_MAP.values()),
+    help="선택한 성분이 포함된 급식 메뉴가 빨간색으로 하이라이트됩니다."
+)
+
+convert_allergy = st.sidebar.toggle("알레르기 식품명으로 변환 표시", value=True)
+
+with st.sidebar.expander("ℹ️ 전체 알레르기 번호 표"):
     allergy_text = "\n".join([f"**{k}**: {v}" for k, v in ALLERGY_MAP.items()])
     st.markdown(allergy_text)
 
 # -----------------------------------------------------------------------------
-# 4. 메뉴 텍스트 및 영양 정보 정제 함수
+# 5. 메뉴 텍스트 파싱 및 알레르기 강조 처리 함수
 # -----------------------------------------------------------------------------
-def format_dish_name(dish_raw, convert=False):
+def format_dish_with_allergy(dish_raw, convert=False, my_allergies=[]):
+    """
+    메뉴별 알레르기 정보를 파싱하고 사용자의 알레르기 항목 포함 시 강조태그를 적용합니다.
+    """
     clean_text = dish_raw.replace("<br/>", "\n")
-
-    if not convert:
-        return clean_text
-
     lines = clean_text.split("\n")
-    converted_lines = []
+    rendered_lines = []
 
     for line in lines:
-        if "." in line:
-            parts = line.split(" ")
-            new_parts = []
-            for part in parts:
-                if part.startswith("(") and part.endswith(")"):
-                    nums = part[1:-1].split(".")
-                    mapped_names = [ALLERGY_MAP.get(num, num) for num in nums if num in ALLERGY_MAP]
-                    if mapped_names:
-                        new_parts.append(f"({','.join(mapped_names)})")
-                    else:
-                        new_parts.append(part)
-                else:
-                    new_parts.append(part)
-            converted_lines.append(" ".join(new_parts))
-        else:
-            converted_lines.append(line)
+        if not line.strip():
+            continue
 
-    return "\n".join(converted_lines)
+        # 알레르기 번호 추출
+        contained_allergy_names = []
+        if "(" in line and ")" in line:
+            try:
+                start_idx = line.rfind("(")
+                end_idx = line.rfind(")")
+                num_str = line[start_idx+1:end_idx]
+                nums = num_str.split(".")
+                contained_allergy_names = [ALLERGY_MAP.get(n, n) for n in nums if n in ALLERGY_MAP]
+            except Exception:
+                pass
+
+        # 알레르기 번호 -> 이름 변환 적용
+        display_line = line
+        if convert and contained_allergy_names:
+            line_prefix = line[:line.rfind("(")]
+            display_line = f"{line_prefix}({','.join(contained_allergy_names)})"
+
+        safe_line = html.escape(display_line)
+
+        # 사용자의 알레르기와 매칭 여부 검사
+        matched_user_allergies = [a for a in contained_allergy_names if a in my_allergies]
+
+        if matched_user_allergies:
+            alert_tag = f'<span class="allergy-badge">🚨 {",".join(matched_user_allergies)}</span>'
+            rendered_lines.append(f'<div class="allergy-alert">{safe_line} {alert_tag}</div>')
+        else:
+            rendered_lines.append(f'<div>{safe_line}</div>')
+
+    return "".join(rendered_lines)
 
 def format_nutrition_info(ntr_raw):
     if not ntr_raw:
@@ -168,7 +272,7 @@ def format_nutrition_info(ntr_raw):
     return html.escape(clean_ntr)
 
 # -----------------------------------------------------------------------------
-# 5. NEIS API 데이터 수집 함수
+# 6. NEIS API 데이터 수집 함수
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def fetch_meal_data(key, atpt, sd, year, month):
@@ -223,13 +327,12 @@ def fetch_meal_data(key, atpt, sd, year, month):
         return (None, f"통신 오류가 발생했습니다. 인터넷 연결이나 입력값을 확인해 주세요. ({e})")
 
 # -----------------------------------------------------------------------------
-# 6. 상단 필터 및 뷰 컨트롤 (주간/월간 뷰 전환 포함)
+# 7. 메인 화면 구성 및 컨트롤
 # -----------------------------------------------------------------------------
-st.title("🍱 우리 학교 급식 달력")
+st.title(f"🍱 {st.session_state.school_display_name} 급식 달력")
 
 now = datetime.now()
 
-# 주간 모드 기준 날짜 세션 초기화 (월요일 기준)
 if "week_anchor" not in st.session_state:
     st.session_state.week_anchor = now - timedelta(days=now.weekday())
 
@@ -244,13 +347,12 @@ with top_col2:
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 7. 뷰 선택에 따른 화면 구성
+# 8. 뷰 출력 로직
 # -----------------------------------------------------------------------------
 try:
     weekdays_name = ["월", "화", "수", "목", "금"]
     today_str = now.strftime("%Y%m%d")
 
-    # 카드 HTML 생성 헬퍼 함수
     def render_meal_card(date_obj, day_meals):
         ymd_str = date_obj.strftime("%Y%m%d")
         is_today = (ymd_str == today_str)
@@ -281,8 +383,8 @@ try:
                     m_type = meal["type"]
                     color_class = "lunch" if m_type == "중식" else ("dinner" if m_type == "석식" else "other")
 
-                    formatted_dish = format_dish_name(meal["dish"], convert_allergy)
-                    safe_dish = html.escape(formatted_dish).replace("\n", "<br/>")
+                    # 알레르기 강조 포함 메뉴 HTML 구성
+                    dish_html = format_dish_with_allergy(meal["dish"], convert_allergy, user_allergies)
 
                     cal_badge = f'<span class="cal-badge">{html.escape(meal["cal"])}</span>' if meal.get("cal") else ""
                     safe_ntr = format_nutrition_info(meal.get("ntr", ""))
@@ -292,7 +394,7 @@ try:
                         <span class="meal-title {color_class}">▶ {m_type}</span>
                         {cal_badge}
                     </div>
-                    <div class="meal-content">{safe_dish}</div>
+                    <div class="meal-content">{dish_html}</div>
                     <details class="nutrition-details">
                         <summary class="nutrition-summary">📊 영양성분 보기</summary>
                         <div style="margin-top:4px;">{safe_ntr}</div>
@@ -300,7 +402,6 @@ try:
                     """
 
         return f"""<div class="{card_class}">{inner_html}</div>"""
-
 
     # ==================== A. 월간 보기 ====================
     if view_mode == "월간 보기":
@@ -349,13 +450,11 @@ try:
                 st.session_state.week_anchor += timedelta(days=7)
                 st.rerun()
 
-        # 주간 날짜 범위 계산 (월~금)
         monday = st.session_state.week_anchor
         week_days = [monday + timedelta(days=i) for i in range(5)]
 
         st.subheader(f"🗓️ {monday.strftime('%Y년 %m월 %d일')} ~ {(monday + timedelta(days=4)).strftime('%m월 %d일')} 급식")
 
-        # 주간 보기 시 필요한 달(Month)들의 데이터를 수집
         needed_months = set((d.year, d.month) for d in week_days)
         merged_meal_data = {}
         for y, m in needed_months:
