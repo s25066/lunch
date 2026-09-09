@@ -95,7 +95,7 @@ ALLERGY_MAP = {
 }
 
 # -----------------------------------------------------------------------------
-# 3. 사이드바 구성 (인증키 검사, 학교 정보 입력, 옵션 설정)
+# 3. 사이드바 구성
 # -----------------------------------------------------------------------------
 st.sidebar.title("⚙️ 설정")
 
@@ -219,7 +219,7 @@ def fetch_meal_data(key, atpt, sd, year, month):
 
 
 # -----------------------------------------------------------------------------
-# 6. 상단 필터 컨트롤 (연도, 월, 급식 종류 선택)
+# 6. 상단 필터 컨트롤
 # -----------------------------------------------------------------------------
 st.title("🍱 우리 학교 월간 급식 달력")
 
@@ -288,19 +288,12 @@ try:
                         else ""
                     )
 
-                    inner_parts = [
-                        f"""<div class="date-header">
-                            <span>{day}일 ({weekdays_name[idx]})</span>
-                            {today_badge_html}
-                        </div>"""
-                    ]
+                    inner_html = f"""<div class="date-header"><span>{day}일 ({weekdays_name[idx]})</span>{today_badge_html}</div>"""
 
                     day_meals = meal_data.get(current_ymd, [])
 
                     if not day_meals:
-                        inner_parts.append(
-                            '<div class="no-meal">급식 없음</div>'
-                        )
+                        inner_html += '<div class="no-meal">급식 없음</div>'
                     else:
                         filtered_meals = []
                         for meal in day_meals:
@@ -318,9 +311,7 @@ try:
                                 filtered_meals.append(meal)
 
                         if not filtered_meals:
-                            inner_parts.append(
-                                '<div class="no-meal">해당 식단 없음</div>'
-                            )
+                            inner_html += '<div class="no-meal">해당 식단 없음</div>'
                         else:
                             for meal in filtered_meals:
                                 m_type = meal["type"]
@@ -333,21 +324,16 @@ try:
                                 formatted_dish = format_dish_name(
                                     meal["dish"], convert_allergy
                                 )
-                                # 특수문자 에스케이프 처리 후 줄바꿈 태그 변경
+                                # 메뉴 이름 부분만 안전하게 텍스트만 치환
                                 safe_dish = html.escape(formatted_dish).replace(
                                     "\n", "<br/>"
                                 )
 
-                                inner_parts.append(
-                                    f"""<div class="meal-title {color_class}">▶ {m_type}</div>
-                                    <div class="meal-content">{safe_dish}</div>"""
-                                )
+                                inner_html += f"""<div class="meal-title {color_class}">▶ {m_type}</div><div class="meal-content">{safe_dish}</div>"""
 
-                    card_body = "".join(inner_parts)
-                    st.markdown(
-                        f'<div class="{card_class}">{card_body}</div>',
-                        unsafe_allow_html=True,
-                    )
+                    # st.markdown 대신 st.html을 써서 Pure HTML로 통째로 렌더링
+                    full_card = f"""<div class="{card_class}">{inner_html}</div>"""
+                    st.html(full_card)
 
 except Exception as ex:
     st.error(f"🎨 화면 구성 중 예외가 발생했습니다: {ex}")
