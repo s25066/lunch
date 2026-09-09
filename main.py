@@ -9,7 +9,7 @@ import streamlit as st
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="학교 급식 달력", page_icon="🍱", layout="wide")
 
-# CSS 스타일 정의
+# CSS 스타일 정의 (알레르기 경고 하이라이트 추가)
 st.markdown(
     """
     <style>
@@ -132,40 +132,7 @@ ALLERGY_MAP = {
 }
 
 # -----------------------------------------------------------------------------
-# 3. 학교 검색 함수 (NEIS schoolInfo API)
-# -----------------------------------------------------------------------------
-@st.cache_data(ttl=3600)
-def search_school(key, school_name):
-    url = "https://open.neis.go.kr/hub/schoolInfo"
-    params = {
-        "KEY": key,
-        "Type": "json",
-        "pIndex": 1,
-        "pSize": 20,
-        "SCHUL_NM": school_name
-    }
-    try:
-        res = requests.get(url, params=params, timeout=10)
-        res.raise_for_status()
-        data = res.json()
-        if "schoolInfo" in data:
-            rows = data["schoolInfo"][1]["row"]
-            results = []
-            for r in rows:
-                results.append({
-                    "name": r["SCHUL_NM"],
-                    "atpt": r["ATPT_OFCDC_SC_CODE"],
-                    "sd": r["SD_SCHUL_CODE"],
-                    "location": r.get("LCTN_SC_NM", "")
-                })
-            return results, None
-        else:
-            return [], "검색 결과가 없습니다."
-    except Exception as e:
-        return [], f"검색 중 통신 오류 발생: {e}"
-
-# -----------------------------------------------------------------------------
-# 4. 사이드바 구성 (학교 검색 + 알레르기 강황 설정)
+# 3. 사이드바 구성
 # -----------------------------------------------------------------------------
 st.sidebar.title("⚙️ 설정")
 
@@ -176,36 +143,12 @@ if "NEIS_KEY" not in st.secrets:
 
 neis_key = st.secrets["NEIS_KEY"]
 
-# 🏫 1) 학교 검색
-st.sidebar.subheader("🏫 학교 검색")
-search_keyword = st.sidebar.text_input("학교 이름을 입력하세요", value="서울고등학교")
-
-if "selected_atpt" not in st.session_state:
-    st.session_state.selected_atpt = "B10"
-if "selected_sd" not in st.session_state:
-    st.session_state.selected_sd = "7010057"
-if "school_display_name" not in st.session_state:
-    st.session_state.school_display_name = "서울고등학교"
-
-if search_keyword:
-    schools, search_err = search_school(neis_key, search_keyword)
-    if schools:
-        school_options = [f"{s['name']} ({s['location']})" for s in schools]
-        selected_index = st.sidebar.selectbox("목록에서 학교 선택", range(len(school_options)), format_func=lambda x: school_options[x])
-        
-        chosen = schools[selected_index]
-        st.session_state.selected_atpt = chosen["atpt"]
-        st.session_state.selected_sd = chosen["sd"]
-        st.session_state.school_display_name = chosen["name"]
-    elif search_err:
-        st.sidebar.caption(f"⚠️ {search_err}")
-
-atpt_code = st.session_state.selected_atpt
-sd_code = st.session_state.selected_sd
+atpt_code = st.sidebar.text_input("시도교육청코드", value="B10", help="예: 서울(B10), 경기(J10) 등")
+sd_code = st.sidebar.text_input("표준학교코드", value="7010057", help="학교의 7자리 표준학교코드")
 
 st.sidebar.markdown("---")
 
-# ⚠️ 2) 나의 알레르기 선택
+# ⚠️ 나의 알레르기 설정 추가
 st.sidebar.subheader("⚠️ 나의 알레르기 설정")
 user_allergies = st.sidebar.multiselect(
     "보유 알레르기를 선택하세요",
@@ -220,7 +163,7 @@ with st.sidebar.expander("ℹ️ 전체 알레르기 번호 표"):
     st.markdown(allergy_text)
 
 # -----------------------------------------------------------------------------
-# 5. 메뉴 텍스트 파싱 및 알레르기 강조 처리 함수
+# 4. 메뉴 텍스트 파싱 및 알레르기 강조 처리 함수
 # -----------------------------------------------------------------------------
 def format_dish_with_allergy(dish_raw, convert=False, my_allergies=[]):
     """
@@ -272,7 +215,7 @@ def format_nutrition_info(ntr_raw):
     return html.escape(clean_ntr)
 
 # -----------------------------------------------------------------------------
-# 6. NEIS API 데이터 수집 함수
+# 5. NEIS API 데이터 수집 함수
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def fetch_meal_data(key, atpt, sd, year, month):
@@ -327,9 +270,9 @@ def fetch_meal_data(key, atpt, sd, year, month):
         return (None, f"통신 오류가 발생했습니다. 인터넷 연결이나 입력값을 확인해 주세요. ({e})")
 
 # -----------------------------------------------------------------------------
-# 7. 메인 화면 구성 및 컨트롤
+# 6. 메인 화면 타이틀 및 상단 컨트롤
 # -----------------------------------------------------------------------------
-st.title(f"🍱 {st.session_state.school_display_name} 급식 달력")
+st.title("🍱 우리 학교 급식 달력")
 
 now = datetime.now()
 
@@ -347,7 +290,7 @@ with top_col2:
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 8. 뷰 출력 로직
+# 7. 뷰 선택에 따른 화면 구성
 # -----------------------------------------------------------------------------
 try:
     weekdays_name = ["월", "화", "수", "목", "금"]
@@ -383,7 +326,7 @@ try:
                     m_type = meal["type"]
                     color_class = "lunch" if m_type == "중식" else ("dinner" if m_type == "석식" else "other")
 
-                    # 알레르기 강조 포함 메뉴 HTML 구성
+                    # 알레르기 강조 적용
                     dish_html = format_dish_with_allergy(meal["dish"], convert_allergy, user_allergies)
 
                     cal_badge = f'<span class="cal-badge">{html.escape(meal["cal"])}</span>' if meal.get("cal") else ""
