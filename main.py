@@ -5,27 +5,42 @@ import requests
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 기본 설정 및 스타일 정의
+# 1. 페이지 기본 설정 및 스타일 정의 (CSS 이펙트 포함)
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="학교 급식 달력", page_icon="🍱", layout="wide")
 
-# 카드 테두리, 배지 및 영양정보 스타일 정의 (CSS)
+# 카드 테두리, 배지, 영양정보 및 애니메이션 이펙트 스타일 정의 (CSS)
 st.markdown(
     """
     <style>
+    /* 카드 마우스 호버(Hover) 이펙트 */
     .meal-card {
         border: 1px solid #e0e0e0;
-        border-radius: 8px;
-        padding: 12px;
+        border-radius: 12px;
+        padding: 14px;
         margin-bottom: 12px;
         background-color: #ffffff;
         min-height: 180px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .meal-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+    }
+
+    /* 오늘 날짜 (TODAY) 펄스 애니메이션 이펙트 */
+    @keyframes pulse-border {
+        0% { box-shadow: 0 0 0 0 rgba(49, 130, 206, 0.4); }
+        70% { box-shadow: 0 0 0 8px rgba(49, 130, 206, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(49, 130, 206, 0); }
     }
     .today-card {
         border: 2px solid #3182ce !important;
         background-color: #f7fafc !important;
+        animation: pulse-border 2s infinite;
     }
+
     .date-header {
         font-weight: bold;
         font-size: 1.1em;
@@ -108,7 +123,40 @@ ALLERGY_MAP = {
 }
 
 # -----------------------------------------------------------------------------
-# 3. 사이드바 구성
+# 3. 학교 검색 함수 (NEIS schoolInfo API)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=3600)
+def search_school(key, school_name):
+    url = "https://open.neis.go.kr/hub/schoolInfo"
+    params = {
+        "KEY": key,
+        "Type": "json",
+        "pIndex": 1,
+        "pSize": 20,
+        "SCHUL_NM": school_name
+    }
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        if "schoolInfo" in data:
+            rows = data["schoolInfo"][1]["row"]
+            results = []
+            for r in rows:
+                results.append({
+                    "name": r["SCHUL_NM"],
+                    "atpt": r["ATPT_OFCDC_SC_CODE"],
+                    "sd": r["SD_SCHUL_CODE"],
+                    "location": r.get("LCTN_SC_NM", "")
+                })
+            return results, None
+        else:
+            return [], "검색 결과가 없습니다."
+    except Exception as e:
+        return [], f"검색 중 통신 오류 발생: {e}"
+
+# -----------------------------------------------------------------------------
+# 4. 사이드바 구성 (학교 이름 검색 기능 추가)
 # -----------------------------------------------------------------------------
 st.sidebar.title("⚙️ 설정")
 
@@ -119,8 +167,35 @@ if "NEIS_KEY" not in st.secrets:
 
 neis_key = st.secrets["NEIS_KEY"]
 
-atpt_code = st.sidebar.text_input("시도교육청코드", value="B10", help="예: 서울(B10), 경기(J10) 등")
-sd_code = st.sidebar.text_input("표준학교코드", value="7010057", help="학교의 7자리 표준학교코드")
+st.sidebar.subheader("🔍 학교 검색")
+search_keyword = st.sidebar.text_input("학교 이름을 입력하세요", value="서울고등학교")
+
+# 세션 상태 초기화
+if "selected_atpt" not in st.session_state:
+    st.session_state.selected_atpt = "B10"
+if "selected_sd" not in st.session_state:
+    st.session_state.selected_sd = "7010057"
+if "school_display_name" not in st.session_state:
+    st.session_state.school_display_name = "서울고등학교"
+
+if search_keyword:
+    schools, search_err = search_school(neis_key, search_keyword)
+    if schools:
+        school_options = [f"{s['name']} ({s['location']})" for s in schools]
+        selected_index = st.sidebar.selectbox("검색 결과 목록에서 선택", range(len(school_options)), format_func=lambda x: school_options[x])
+        
+        # 선택된 학교 정보 반영 및 폭죽 이펙트 연출
+        chosen = schools[selected_index]
+        if st.session_state.selected_sd != chosen["sd"]:
+            st.session_state.selected_atpt = chosen["atpt"]
+            st.session_state.selected_sd = chosen["sd"]
+            st.session_state.school_display_name = chosen["name"]
+            st.balloons()  # 🎉 학교 선택 성공 시 축하 폭죽 이펙트!
+    elif search_err:
+        st.sidebar.caption(f"⚠️ {search_err}")
+
+atpt_code = st.session_state.selected_atpt
+sd_code = st.session_state.selected_sd
 
 st.sidebar.markdown("---")
 convert_allergy = st.sidebar.toggle("알레르기 식품명으로 변환", value=False)
@@ -130,7 +205,7 @@ with st.sidebar.expander("ℹ️ 알레르기 번호 표 보기"):
     st.markdown(allergy_text)
 
 # -----------------------------------------------------------------------------
-# 4. 메뉴 텍스트 및 영양 정보 정제 함수
+# 5. 메뉴 텍스트 및 영양 정보 정제 함수
 # -----------------------------------------------------------------------------
 def format_dish_name(dish_raw, convert=False):
     clean_text = dish_raw.replace("<br/>", "\n")
@@ -168,7 +243,7 @@ def format_nutrition_info(ntr_raw):
     return html.escape(clean_ntr)
 
 # -----------------------------------------------------------------------------
-# 5. NEIS API 데이터 수집 함수
+# 6. NEIS API 급식 데이터 수집 함수
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def fetch_meal_data(key, atpt, sd, year, month):
@@ -223,13 +298,12 @@ def fetch_meal_data(key, atpt, sd, year, month):
         return (None, f"통신 오류가 발생했습니다. 인터넷 연결이나 입력값을 확인해 주세요. ({e})")
 
 # -----------------------------------------------------------------------------
-# 6. 상단 필터 및 뷰 컨트롤 (주간/월간 뷰 전환 포함)
+# 7. 메인 화면 타이틀 및 상단 컨트롤
 # -----------------------------------------------------------------------------
-st.title("🍱 우리 학교 급식 달력")
+st.title(f"🍱 {st.session_state.school_display_name} 급식 달력")
 
 now = datetime.now()
 
-# 주간 모드 기준 날짜 세션 초기화 (월요일 기준)
 if "week_anchor" not in st.session_state:
     st.session_state.week_anchor = now - timedelta(days=now.weekday())
 
@@ -244,13 +318,12 @@ with top_col2:
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 7. 뷰 선택에 따른 화면 구성
+# 8. 뷰 선택에 따른 화면 구성 (스피너 로딩 이펙트 적용)
 # -----------------------------------------------------------------------------
 try:
     weekdays_name = ["월", "화", "수", "목", "금"]
     today_str = now.strftime("%Y%m%d")
 
-    # 카드 HTML 생성 헬퍼 함수
     def render_meal_card(date_obj, day_meals):
         ymd_str = date_obj.strftime("%Y%m%d")
         is_today = (ymd_str == today_str)
@@ -301,75 +374,73 @@ try:
 
         return f"""<div class="{card_class}">{inner_html}</div>"""
 
+    # 🌀 데이터 로딩 시 스피너 이펙트 출력
+    with st.spinner("🍱 NEIS에서 식단표를 불러오는 중입니다..."):
+        # ==================== A. 월간 보기 ====================
+        if view_mode == "월간 보기":
+            c1, c2 = st.columns(2)
+            with c1:
+                selected_year = st.selectbox("연도 선택", range(now.year - 1, now.year + 2), index=1)
+            with c2:
+                selected_month = st.selectbox("월 선택", range(1, 13), index=now.month - 1)
 
-    # ==================== A. 월간 보기 ====================
-    if view_mode == "월간 보기":
-        c1, c2 = st.columns(2)
-        with c1:
-            selected_year = st.selectbox("연도 선택", range(now.year - 1, now.year + 2), index=1)
-        with c2:
-            selected_month = st.selectbox("월 선택", range(1, 13), index=now.month - 1)
+            meal_data, error = fetch_meal_data(neis_key, atpt_code, sd_code, selected_year, selected_month)
+            if error:
+                st.error(f"🚨 급식 정보를 가져오는데 실패했습니다: {error}")
+                st.stop()
 
-        meal_data, error = fetch_meal_data(neis_key, atpt_code, sd_code, selected_year, selected_month)
-        if error:
-            st.error(f"🚨 급식 정보를 가져오는데 실패했습니다: {error}")
-            st.stop()
+            month_cal = calendar.monthcalendar(selected_year, selected_month)
 
-        month_cal = calendar.monthcalendar(selected_year, selected_month)
+            for week in month_cal:
+                workdays = week[:5]
+                if any(day != 0 for day in workdays):
+                    cols = st.columns(5)
+                    for idx, day in enumerate(workdays):
+                        with cols[idx]:
+                            if day == 0:
+                                st.write("")
+                                continue
 
-        for week in month_cal:
-            workdays = week[:5]
-            if any(day != 0 for day in workdays):
-                cols = st.columns(5)
-                for idx, day in enumerate(workdays):
-                    with cols[idx]:
-                        if day == 0:
-                            st.write("")
-                            continue
+                            current_date = datetime(selected_year, selected_month, day)
+                            current_ymd = current_date.strftime("%Y%m%d")
+                            day_meals = meal_data.get(current_ymd, [])
 
-                        current_date = datetime(selected_year, selected_month, day)
-                        current_ymd = current_date.strftime("%Y%m%d")
-                        day_meals = meal_data.get(current_ymd, [])
+                            st.html(render_meal_card(current_date, day_meals))
 
-                        st.html(render_meal_card(current_date, day_meals))
+        # ==================== B. 주간 보기 ====================
+        else:
+            btn_col1, btn_col2, btn_col3, _ = st.columns([1, 1, 1, 3])
+            with btn_col1:
+                if st.button("◀ 이전 주"):
+                    st.session_state.week_anchor -= timedelta(days=7)
+                    st.rerun()
+            with btn_col2:
+                if st.button("📅 이번 주"):
+                    st.session_state.week_anchor = now - timedelta(days=now.weekday())
+                    st.rerun()
+            with btn_col3:
+                if st.button("다음 주 ▶"):
+                    st.session_state.week_anchor += timedelta(days=7)
+                    st.rerun()
 
-    # ==================== B. 주간 보기 ====================
-    else:
-        btn_col1, btn_col2, btn_col3, _ = st.columns([1, 1, 1, 3])
-        with btn_col1:
-            if st.button("◀ 이전 주"):
-                st.session_state.week_anchor -= timedelta(days=7)
-                st.rerun()
-        with btn_col2:
-            if st.button("📅 이번 주"):
-                st.session_state.week_anchor = now - timedelta(days=now.weekday())
-                st.rerun()
-        with btn_col3:
-            if st.button("다음 주 ▶"):
-                st.session_state.week_anchor += timedelta(days=7)
-                st.rerun()
+            monday = st.session_state.week_anchor
+            week_days = [monday + timedelta(days=i) for i in range(5)]
 
-        # 주간 날짜 범위 계산 (월~금)
-        monday = st.session_state.week_anchor
-        week_days = [monday + timedelta(days=i) for i in range(5)]
+            st.subheader(f"🗓️ {monday.strftime('%Y년 %m월 %d일')} ~ {(monday + timedelta(days=4)).strftime('%m월 %d일')} 급식")
 
-        st.subheader(f"🗓️ {monday.strftime('%Y년 %m월 %d일')} ~ {(monday + timedelta(days=4)).strftime('%m월 %d일')} 급식")
+            needed_months = set((d.year, d.month) for d in week_days)
+            merged_meal_data = {}
+            for y, m in needed_months:
+                data, error = fetch_meal_data(neis_key, atpt_code, sd_code, y, m)
+                if data:
+                    merged_meal_data.update(data)
 
-        # 주간 보기 시 필요한 달(Month)들의 데이터를 수집
-        needed_months = set((d.year, d.month) for d in week_days)
-        merged_meal_data = {}
-        for y, m in needed_months:
-            data, error = fetch_meal_data(neis_key, atpt_code, sd_code, y, m)
-            if data:
-                merged_meal_data.update(data)
-
-        cols = st.columns(5)
-        for idx, date_obj in enumerate(week_days):
-            with cols[idx]:
-                ymd_str = date_obj.strftime("%Y%m%d")
-                day_meals = merged_meal_data.get(ymd_str, [])
-                st.html(render_meal_card(date_obj, day_meals))
+            cols = st.columns(5)
+            for idx, date_obj in enumerate(week_days):
+                with cols[idx]:
+                    ymd_str = date_obj.strftime("%Y%m%d")
+                    day_meals = merged_meal_data.get(ymd_str, [])
+                    st.html(render_meal_card(date_obj, day_meals))
 
 except Exception as ex:
     st.error(f"🎨 화면 구성 중 예외가 발생했습니다: {ex}")
-            
